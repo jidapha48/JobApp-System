@@ -280,15 +280,15 @@ def edit_profile_page(user, role):
                     st.session_state['user_info']['js_skills'] = js_skills
                     st.session_state['user_info']['js_experience'] = js_exp
                     st.success("บันทึกข้อมูลส่วนตัวเรียบร้อยแล้ว"); time.sleep(1); st.rerun()
-                else:
-                    st.error("เกิดข้อผิดพลาดในการบันทึกข้อมูล")
+# ... (ฟังก์ชัน edit_profile_page และอื่นๆ ด้านบน) ...
 
-# --- 9. MAIN APP CONTROLLER (เหมือนเดิม) ---
+# --- 9. MAIN APP CONTROLLER (FIXED IMAGE URL) ---
 def main():
     if 'app_initialized' not in st.session_state:
         st.set_page_config(layout="centered", initial_sidebar_state="collapsed")
         with st.container():
-            st.image("https.cdn-icons-png.flaticon.com/512/3063/3063833.png", width=120)
+            # (FIXED) แก้ไข URL ให้ถูกต้อง
+            st.image("https://cdn-icons-png.flaticon.com/512/3063/3063833.png", width=120)
             st.title("Job Application System"); st.write("Connecting talent with opportunity...")
             progress_bar = st.progress(0)
             for percent_complete in range(100):
