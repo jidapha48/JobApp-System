@@ -12,49 +12,31 @@ st.set_page_config(
     initial_sidebar_state="auto"
 )
 
-# --- 2. DATABASE CONNECTION (Deploy Version) ---
+# --- 2. DATABASE CONNECTION (Efficient Caching) ---
 @st.cache_resource
 def init_connection():
-    """
-    เชื่อมต่อฐานข้อมูล MySQL
-    เวอร์ชันนี้จะดึงข้อมูลการเชื่อมต่อจาก st.secrets
-    """
+    """เชื่อมต่อฐานข้อมูล MySQL"""
     try:
+        # (FIX) ดึงค่า port มาเป็น string ก่อน
+        port_str = st.secrets["database"]["port"]
+        
+        # (FIX) แปลง string ให้เป็น integer (ตัวเลข)
+        port_int = int(port_str) 
+        
         return mysql.connector.connect(
             host=st.secrets["database"]["host"],
-            port=st.secrets["database"]["port"],
+            port=port_int,  # <-- ใช้ port ที่เป็นตัวเลขแล้ว
             user=st.secrets["database"]["user"],
             password=st.secrets["database"]["password"],
             database=st.secrets["database"]["database"]
         )
+    except ValueError:
+        # (FIX) ดักจับ Error ถ้าค่า port ที่ใส่มาใน Secrets ไม่ใช่ตัวเลข
+        st.error(f"Invalid Port number in Secrets. Please check your Streamlit Cloud settings. Port value must be a number.")
+        return None
     except Error as e:
         st.error(f"Database connection failed: {e}")
         return None
-
-def run_query(query, params=None, commit=False, fetch_one=False, fetch_all=False):
-    """
-    ฟังก์ชันสำหรับรัน SQL Query ที่แก้ไข Error 'UnboundLocalError' แล้ว
-    """
-    conn = init_connection()
-    cursor = None  # 1. ประกาศตัวแปรไว้ก่อน
-    if conn and conn.is_connected():
-        try:
-            cursor = conn.cursor(dictionary=True)
-            cursor.execute(query, params)
-            if commit:
-                conn.commit()
-                return True
-            elif fetch_one:
-                return cursor.fetchone()
-            elif fetch_all:
-                return cursor.fetchall()
-        except Error as e:
-            st.error(f"Query Error: {e}")
-        finally:
-            # 2. ตรวจสอบว่า cursor ถูกสร้างสำเร็จหรือไม่ก่อนสั่งปิด
-            if cursor is not None:
-                cursor.close()
-    return None
 
 # --- 3. UTILITIES ---
 def make_hash(password):
@@ -447,4 +429,5 @@ def main():
                 edit_profile_page(user, role)
 
 if __name__ == '__main__':
+
     main()
