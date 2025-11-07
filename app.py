@@ -26,9 +26,8 @@ def init_connection():
             user=st.secrets["database"]["user"],
             password=st.secrets["database"]["password"],
             database=st.secrets["database"]["database"],
-            client_flag=CLIENT.SSL,
             cursorclass=DictCursor,
-            connect_timeout=10 
+            connect_timeout=10
         )
     except pymysql.Error as e:
         print(f"Database connection failed: {e}")
@@ -391,3 +390,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
