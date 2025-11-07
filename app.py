@@ -1,6 +1,6 @@
 import streamlit as st
-import pymysql  # <--- เปลี่ยน Library ที่ Import
-from pymysql.cursors import DictCursor  # <--- Import ตัวนี้เพื่อให้ผลลัพธ์เป็น Dictionary
+import pymysql
+from pymysql.cursors import DictCursor
 from pymysql.constants import CLIENT
 import hashlib
 import time
@@ -18,18 +18,15 @@ st.set_page_config(
 def init_connection():
     """เชื่อมต่อฐานข้อมูล MySQL (ใช้ PyMySQL)"""
     try:
-        # PyMySQL อ่านค่า port เป็น string ได้เลย ไม่ต้องแปลง
         port_int = int(st.secrets["database"]["port"])
-
-        # client_flag=CLIENT.SSL จำเป็นสำหรับการเชื่อมต่อ Aiven ที่บังคับ SSL
         return pymysql.connect(
             host=st.secrets["database"]["host"],
             port=port_int,
             user=st.secrets["database"]["user"],
             password=st.secrets["database"]["password"],
             database=st.secrets["database"]["database"],
-            client_flag=CLIENT.SSL,  # <--- บังคับใช้ SSL ตามที่ Aiven ต้องการ
-            cursorclass=DictCursor  # <--- (สำคัญมาก) ทำให้ผลลัพธ์เป็น Dict เหมือนเดิม
+            client_flag=CLIENT.SSL,
+            cursorclass=DictCursor
         )
     except pymysql.Error as e:
         st.error(f"Database connection failed: {e}")
@@ -44,7 +41,6 @@ def run_query(query, params=None, commit=False, fetch_one=False, fetch_all=False
     conn = init_connection()
     if conn:
         try:
-            # PyMySQL ใช้ 'with' จัดการ cursor ได้ดีกว่า
             with conn.cursor() as cursor:
                 cursor.execute(query, params)
                 if commit:
@@ -56,7 +52,6 @@ def run_query(query, params=None, commit=False, fetch_one=False, fetch_all=False
                     return cursor.fetchall()
         except pymysql.Error as e:
             st.error(f"Query Error: {e}")
-        # PyMySQL ไม่ต้อง close connection ที่ cache ไว้
     return None
 
 # --- 4. UTILITIES (เหมือนเดิม) ---
@@ -119,7 +114,7 @@ def login_register_page():
                      else:
                         st.warning("กรุณากรอกช่องที่มีเครื่องหมาย * ให้ครบ")
 
-# --- 6. COMPANY DASHBOARD (เหมือนเดิม) ---
+# --- 6. COMPANY DASHBOARD (ไม่มีการเปลี่ยนแปลง) ---
 def company_dashboard(user):
     st.subheader(f"Dashboard: {user['c_name']}")
     tab1, tab2, tab3 = st.tabs(["ประกาศงานของคุณ", "ลงประกาศงานใหม่", "จัดการใบสมัคร"])
@@ -156,6 +151,7 @@ def company_dashboard(user):
         my_jobs = run_query("SELECT j_id, j_position FROM JobPost WHERE j_company_id = %s", (user['c_id'],), fetch_all=True)
         if my_jobs:
             for job in my_jobs:
+                # (OPTIMIZATION) นี่คือ N+1 Query ที่เราอาจจะแก้ทีหลังได้ แต่ตอนนี้ยังทำงานได้
                 sql_apps = "SELECT Application.*, JobSeeker.js_full_name, JobSeeker.js_email, JobSeeker.js_skills, JobSeeker.js_experience FROM Application JOIN JobSeeker ON Application.app_job_seeker_id = JobSeeker.js_id WHERE app_job_id = %s ORDER BY app_apply_date DESC"
                 applicants = run_query(sql_apps, (job['j_id'],), fetch_all=True)
                 count = len(applicants) if applicants else 0
@@ -182,22 +178,33 @@ def company_dashboard(user):
         else:
             st.warning("กรุณาลงประกาศงานก่อน เพื่อให้มีผู้สมัคร")
 
-# --- 7. JOB SEEKER DASHBOARD (เหมือนเดิม) ---
+# --- 7. JOB SEEKER DASHBOARD (OPTIMIZED) ---
 def seeker_dashboard(user):
     st.subheader(f"สวัสดีคุณ {user['js_full_name']}")
     tab1, tab2 = st.tabs(["ค้นหางาน", "สถานะการสมัคร"])
+
+    # (FIX #2) ย้ายการดึงข้อมูลการสมัครทั้งหมดมาไว้ข้างนอก
+    my_apps_data = run_query("SELECT app_job_id, app_status FROM Application WHERE app_job_seeker_id=%s", (user['js_id'],), fetch_all=True)
+    # สร้าง Dictionary เพื่อให้ค้นหาได้เร็ว (O(1) lookup)
+    # {job_id: 'status'} เช่น {2: 'pending', 5: 'interview'}
+    applied_jobs = {app['app_job_id']: app['app_status'] for app in my_apps_data} if my_apps_data else {}
+
     with tab1:
         st.write("### ค้นหาตำแหน่งงานที่ใช่สำหรับคุณ")
         col1, col2 = st.columns([3, 1])
         with col1: search_query = st.text_input("ค้นหาจากชื่อตำแหน่ง หรือ ชื่อบริษัท", placeholder="พิมพ์คำค้นหา...")
         with col2: st.write(""); st.write(""); search_clicked = st.button("ค้นหา", use_container_width=True)
+        
+        # (Query 1) ดึงงานทั้งหมด
         sql = "SELECT JobPost.*, Company.c_name FROM JobPost JOIN Company ON JobPost.j_company_id = Company.c_id WHERE j_closing_date >= CURDATE()"
         params = []
         if search_query:
             sql += " AND (JobPost.j_position LIKE %s OR Company.c_name LIKE %s)"
             search_term = f"%{search_query}%"; params.extend([search_term, search_term])
         sql += " ORDER BY j_post_date DESC"
+        
         jobs = run_query(sql, tuple(params) if params else None, fetch_all=True)
+        
         if jobs:
             st.success(f"ค้นพบ {len(jobs)} ตำแหน่งงาน")
             for job in jobs:
@@ -207,23 +214,27 @@ def seeker_dashboard(user):
                         st.write(f"### {job['j_position']}")
                         st.write(f"{job['c_name']} | ปิดรับ: {job['j_closing_date']}")
                     with c2:
-                        check = run_query("SELECT app_status FROM Application WHERE app_job_id=%s AND app_job_seeker_id=%s", (job['j_id'], user['js_id']), fetch_one=True)
-                        if check:
-                            st.info(f"สถานะ: {check['app_status']}")
+                        # (FIX #2) ตรวจสอบจาก Dictionary ใน Python (เร็วกว่ามาก)
+                        job_id = job['j_id']
+                        if job_id in applied_jobs:
+                            st.info(f"สถานะ: {applied_jobs[job_id]}")
                         else:
-                            if st.button("สมัครทันที", key=f"apply_{job['j_id']}", use_container_width=True):
-                                run_query("INSERT INTO Application (app_job_id, app_job_seeker_id, app_apply_date) VALUES (%s, %s, CURDATE())", (job['j_id'], user['js_id']), commit=True)
+                            if st.button("สมัครทันที", key=f"apply_{job_id}", use_container_width=True):
+                                run_query("INSERT INTO Application (app_job_id, app_job_seeker_id, app_apply_date) VALUES (%s, %s, CURDATE())", (job_id, user['js_id']), commit=True)
                                 st.toast("ส่งใบสมัครสำเร็จ!"); time.sleep(1); st.rerun()
                     with st.expander("รายละเอียดงาน"):
                         st.write(f"**Job Description:**\n{job['j_description']}")
                         st.write(f"**Requirements:**\n{job['j_requirements']}")
         else:
             st.warning("ไม่พบตำแหน่งงานที่คุณค้นหา")
+            
     with tab2:
         st.write("### ประวัติการสมัครงานของคุณ")
-        my_apps = run_query("SELECT Application.*, JobPost.j_position, Company.c_name FROM Application JOIN JobPost ON Application.app_job_id = JobPost.j_id JOIN Company ON JobPost.j_company_id = Company.c_id WHERE app_job_seeker_id = %s ORDER BY app_apply_date DESC", (user['js_id'],), fetch_all=True)
-        if my_apps:
-            for app in my_apps:
+        # (OPTIMIZATION) เราสามารถใช้ข้อมูล `my_apps_data` ที่ดึงมาแล้วได้ แต่การ JOIN จะให้ข้อมูลที่สมบูรณ์กว่า
+        # การดึงหน้านี้ยังคงต้องใช้ Query ที่ซับซ้อน แต่หน้านี้ User ไม่ได้เปิดบ่อยเท่าหน้าค้นหา
+        my_apps_display = run_query("SELECT Application.*, JobPost.j_position, Company.c_name FROM Application JOIN JobPost ON Application.app_job_id = JobPost.j_id JOIN Company ON JobPost.j_company_id = Company.c_id WHERE app_job_seeker_id = %s ORDER BY app_apply_date DESC", (user['js_id'],), fetch_all=True)
+        if my_apps_display:
+            for app in my_apps_display:
                 with st.container(border=True):
                     c1, c2, c3 = st.columns([2, 1, 1])
                     c1.write(f"**{app['j_position']}**"); c1.caption(app['c_name'])
@@ -242,7 +253,7 @@ def seeker_dashboard(user):
         else:
             st.info("คุณยังไม่ได้สมัครงาน")
 
-# --- 8. EDIT PROFILE PAGE (เหมือนเดิม) ---
+# --- 8. EDIT PROFILE PAGE (ไม่มีการเปลี่ยนแปลง) ---
 def edit_profile_page(user, role):
     st.subheader("แก้ไขข้อมูลส่วนตัว")
     if role == "Company":
@@ -280,19 +291,21 @@ def edit_profile_page(user, role):
                     st.session_state['user_info']['js_skills'] = js_skills
                     st.session_state['user_info']['js_experience'] = js_exp
                     st.success("บันทึกข้อมูลส่วนตัวเรียบร้อยแล้ว"); time.sleep(1); st.rerun()
-# ... (ฟังก์ชัน edit_profile_page และอื่นๆ ด้านบน) ...
+                else:
+                    st.error("เกิดข้อผิดพลาดในการบันทึกข้อมูล")
 
-# --- 9. MAIN APP CONTROLLER (FIXED IMAGE URL) ---
+# --- 9. MAIN APP CONTROLLER (Splash Screen Optimized) ---
 def main():
     if 'app_initialized' not in st.session_state:
         st.set_page_config(layout="centered", initial_sidebar_state="collapsed")
         with st.container():
-            # (FIXED) แก้ไข URL ให้ถูกต้อง
             st.image("https://cdn-icons-png.flaticon.com/512/3063/3063833.png", width=120)
             st.title("Job Application System"); st.write("Connecting talent with opportunity...")
             progress_bar = st.progress(0)
+            # (FIX #1) ลดเวลา sleep ให้เร็วขึ้น
             for percent_complete in range(100):
-                time.sleep(0.02); progress_bar.progress(percent_complete + 1)
+                time.sleep(0.005) # <--- ลดจาก 0.02 เหลือ 0.005 (รวม 0.5 วินาที)
+                progress_bar.progress(percent_complete + 1)
             progress_bar.empty()
         st.session_state.app_initialized = True
         st.set_page_config(layout="centered", initial_sidebar_state="auto"); st.rerun()
