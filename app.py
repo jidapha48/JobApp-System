@@ -1,7 +1,7 @@
 import streamlit as st
-import psycopg2 # <-- เปลี่ยน Library
-from psycopg2.extras import RealDictCursor # <-- ใช้ตัวนี้แทน DictCursor
-import os # <-- ใช้สำหรับอ่านค่า Environment
+import pymysql
+from pymysql.cursors import DictCursor
+from pymysql.constants import CLIENT
 import hashlib
 import time
 import datetime
@@ -13,55 +13,57 @@ st.set_page_config(
     initial_sidebar_state="auto"
 )
 
-# --- 2. DATABASE CONNECTION (ใช้ PostgreSQL บน Railway) ---
+# --- 2. DATABASE CONNECTION (ใช้ PyMySQL) ---
 @st.cache_resource
 def init_connection():
-    """เชื่อมต่อฐานข้อมูล PostgreSQL (อ่าน URL จาก Railway อัตโนมัติ)"""
+    """เชื่อมต่อฐานข้อมูล MySQL (ใช้ PyMySQL)"""
     try:
-        # Railway จะใส่ DATABASE_URL ให้เราใน Environment โดยอัตโนมัติ
-        db_url = os.environ.get('DATABASE_URL')
-        if not db_url:
-            st.error("DATABASE_URL is not set. Please check Railway variables.")
-            return None
-        
-        # Psycopg2 เชื่อมต่อโดยใช้ URL นี้ได้โดยตรง
-        conn = psycopg2.connect(db_url, cursor_factory=RealDictCursor)
-        conn.autocommit = True # ตั้งค่า Autocommit เพื่อความง่าย
-        return conn
-    except psycopg2.Error as e:
+        port_int = int(st.secrets["database"]["port"])
+        # (FIX) เพิ่ม connect_timeout=10 วินาที
+        return pymysql.connect(
+            host=st.secrets["database"]["host"],
+            port=port_int,
+            user=st.secrets["database"]["user"],
+            password=st.secrets["database"]["password"],
+            database=st.secrets["database"]["database"],
+            client_flag=CLIENT.SSL,
+            cursorclass=DictCursor,
+            connect_timeout=10 
+        )
+    except pymysql.Error as e:
         print(f"Database connection failed: {e}")
+        return None
+    except ValueError:
+        print("Invalid Port number in Secrets.")
         return None
     except Exception as e:
         print(f"An unexpected error occurred in init_connection: {e}")
         return None
 
-# --- 3. RUN QUERY FUNCTION (ปรับปรุงสำหรับ Psycopg2) ---
+# --- 3. RUN QUERY FUNCTION (ปรับปรุงสำหรับ PyMySQL) ---
 def run_query(query, params=None, commit=False, fetch_one=False, fetch_all=False):
-    """ฟังก์ชันสำหรับรัน SQL Query (ใช้ Psycopg2)"""
+    """ฟังก์ชันสำหรับรัน SQL Query (ใช้ PyMySQL)"""
     conn = init_connection()
     if conn:
         try:
             with conn.cursor() as cursor:
                 cursor.execute(query, params)
-                
-                # Psycopg2 ไม่จำเป็นต้องใช้ commit=True ถ้าเราตั้ง autocommit แล้ว
-                # if commit:
-                #     conn.commit() 
-                
-                if fetch_one:
+                if commit:
+                    conn.commit()
+                    return True
+                elif fetch_one:
                     return cursor.fetchone()
                 elif fetch_all:
                     return cursor.fetchall()
-                
-                return True # คืนค่า True ถ้าเป็นการ INSERT/UPDATE/DELETE
-        
-        except psycopg2.Error as e:
+        except pymysql.Error as e:
             st.error(f"Query Error: {e}")
-            if e.pgcode in ['57014', '57P01', '57P02', '57P03']: # Connection errors
+            if e.args[0] in [2006, 2013]: # MySQL server has gone away or Connection lost
                 st.cache_resource.clear() 
                 st.error("Database connection lost. Please refresh the page.")
     else:
-        st.error("Database connection is not available. Check settings.")
+        # ถ้า conn เป็น None (เชื่อมต่อล้มเหลวตั้งแต่แรก)
+        # Error นี้จะถูกจัดการในหน้า Splash Screen แล้ว
+        pass 
     return None
 
 # --- 4. UTILITIES (เหมือนเดิม) ---
@@ -104,10 +106,10 @@ def login_register_page():
                 c_user, c_pass = st.text_input("Username *"), st.text_input("Password *", type="password")
                 c_name, c_email = st.text_input("ชื่อบริษัท *"), st.text_input("Email *")
                 c_addr, c_contact = st.text_area("ที่อยู่"), st.text_input("เบอร์ติดต่อ")
-                if st.form_submit_button("ยืนยันการลงทะเบียน"):
+                if st.form_submit_button("ยืนดีต้อนรับการลงทะเบียน"):
                     if c_user and c_pass and c_name and c_email:
                         sql = "INSERT INTO Company (c_username, c_password_hash, c_name, c_email, c_address, c_contact_info) VALUES (%s,%s,%s,%s,%s,%s)"
-                        if run_query(sql, (c_user, make_hash(c_pass), c_name, c_email, c_addr, c_contact)):
+                        if run_query(sql, (c_user, make_hash(c_pass), c_name, c_email, c_addr, c_contact), commit=True):
                             st.success("ลงทะเบียนบริษัทสำเร็จ! กรุณาเข้าสู่ระบบ")
                     else:
                         st.warning("กรุณากรอกช่องที่มีเครื่องหมาย * ให้ครบ")
@@ -116,19 +118,18 @@ def login_register_page():
                 j_user, j_pass = st.text_input("Username *"), st.text_input("Password *", type="password")
                 j_name, j_email = st.text_input("ชื่อ-นามสกุล *"), st.text_input("Email *")
                 j_edu, j_skill, j_exp = st.text_input("ระดับการศึกษา"), st.text_area("ทักษะ (Skills)"), st.text_area("ประสบการณ์")
-                if st.form_submit_button("ยืนยันการลงทะเบียน"):
+                if st.form_submit_button("ยืนดีต้อนรับการลงทะเบียน"):
                      if j_user and j_pass and j_name and j_email:
                         sql = "INSERT INTO JobSeeker (js_username, js_password_hash, js_full_name, js_email, js_education, js_skills, js_experience) VALUES (%s,%s,%s,%s,%s,%s,%s)"
-                        if run_query(sql, (j_user, make_hash(j_pass), j_name, j_email, j_edu, j_skill, j_exp)):
+                        if run_query(sql, (j_user, make_hash(j_pass), j_name, j_email, j_edu, j_skill, j_exp), commit=True):
                             st.success("ลงทะเบียนผู้หางานสำเร็จ! กรุณาเข้าสู่ระบบ")
                      else:
                         st.warning("กรุณากรอกช่องที่มีเครื่องหมาย * ให้ครบ")
 
-# --- 6. COMPANY DASHBOARD (OPTIMIZED) ---
+# --- 6. COMPANY DASHBOARD (ไม่มีการเปลี่ยนแปลง) ---
 def company_dashboard(user):
     st.subheader(f"Dashboard: {user['c_name']}")
     tab1, tab2, tab3 = st.tabs(["ประกาศงานของคุณ", "ลงประกาศงานใหม่", "จัดการใบสมัคร"])
-    
     with tab1:
         st.write("### งานที่คุณเปิดรับอยู่ในขณะนี้")
         jobs = run_query("SELECT * FROM JobPost WHERE j_company_id = %s ORDER BY j_post_date DESC", (user['c_id'],), fetch_all=True)
@@ -138,11 +139,10 @@ def company_dashboard(user):
                     st.write(f"**รายละเอียด:** {job['j_description']}")
                     st.write(f"**คุณสมบัติ:** {job['j_requirements']}")
                     if st.button("ลบประกาศ", key=f"del_{job['j_id']}"):
-                        run_query("DELETE FROM JobPost WHERE j_id = %s", (job['j_id'],))
+                        run_query("DELETE FROM JobPost WHERE j_id = %s", (job['j_id'],), commit=True)
                         st.toast("ลบประกาศงานสำเร็จ!"); time.sleep(1); st.rerun()
         else:
             st.info("บริษัทของคุณยังไม่มีประกาศงานที่เปิดรับในขณะนี้")
-    
     with tab2:
         st.write("### กรอกรายละเอียดตำแหน่งงาน")
         with st.form("post_job_form"):
@@ -153,12 +153,12 @@ def company_dashboard(user):
             j_close = st.date_input("วันปิดรับสมัคร", value=default_close)
             if st.form_submit_button("ยืนยันการลงประกาศ"):
                 if j_pos:
-                    sql = "INSERT INTO JobPost (j_company_id, j_position, j_description, j_requirements, j_post_date, j_closing_date) VALUES (%s, %s, %s, %s, CURRENT_DATE, %s)"
-                    if run_query(sql, (user['c_id'], j_pos, j_desc, j_req, j_close)):
+                    sql = "INSERT INTO JobPost (j_company_id, j_position, j_description, j_requirements, j_post_date, j_closing_date) VALUES (%s, %s, %s, %s, CURDATE(), %s)"
+                    if run_query(sql, (user['c_id'], j_pos, j_desc, j_req, j_close), commit=True):
                         st.success(f"ลงประกาศตำแหน่ง '{j_pos}' เรียบร้อยแล้ว!"); time.sleep(1.5); st.rerun()
                 else:
                     st.error("กรุณาระบุชื่อตำแหน่งงาน")
-
+    
     with tab3:
         st.write("### รายชื่อผู้สมัครแยกตามตำแหน่งงาน")
         my_jobs = run_query("SELECT j_id, j_position FROM JobPost WHERE j_company_id = %s", (user['c_id'],), fetch_all=True)
@@ -166,8 +166,10 @@ def company_dashboard(user):
         if my_jobs:
             job_ids = [job['j_id'] for job in my_jobs]
             
-            if job_ids: 
+            # (FIX) สร้าง placeholder (%s, %s, %s)
+            if job_ids: # ตรวจสอบว่ามีงานหรือไม่
                 placeholders = ','.join(['%s'] * len(job_ids))
+                
                 sql_all_apps = f"""
                     SELECT Application.*, JobSeeker.js_full_name, JobSeeker.js_email, JobSeeker.js_skills, JobSeeker.js_experience
                     FROM Application
@@ -177,6 +179,7 @@ def company_dashboard(user):
                 """
                 all_applicants = run_query(sql_all_apps, tuple(job_ids), fetch_all=True)
                 
+                # (FIX) จัดกลุ่มผู้สมัครด้วย Python (เร็วกว่ายิง Query)
                 applicants_by_job = {}
                 if all_applicants:
                     for app in all_applicants:
@@ -187,9 +190,10 @@ def company_dashboard(user):
             else:
                 applicants_by_job = {}
 
+            # (FIX) Loop นี้จะเร็วมาก เพราะดึงข้อมูลจาก Python Dict
             for job in my_jobs:
                 job_id = job['j_id']
-                applicants = applicants_by_job.get(job_id, [])
+                applicants = applicants_by_job.get(job_id, []) # ดึงจาก Dict
                 count = len(applicants)
 
                 with st.expander(f"ตำแหน่ง: {job['j_position']} ({count} คนสมัคร)"):
@@ -208,7 +212,7 @@ def company_dashboard(user):
                                     current_index = status_options.index(app['app_status']) if app['app_status'] in status_options else 0
                                     new_status = st.selectbox("เลือกสถานะ:", status_options, index=current_index, key=f"st_{app['app_id']}")
                                     if st.button("บันทึก", key=f"save_{app['app_id']}"):
-                                        run_query("UPDATE Application SET app_status = %s WHERE app_id = %s", (new_status, app['app_id']))
+                                        run_query("UPDATE Application SET app_status = %s WHERE app_id = %s", (new_status, app['app_id']), commit=True)
                                         st.toast(f"อัปเดตสถานะของ {app['js_full_name']} แล้ว!"); time.sleep(1); st.rerun()
                     else:
                         st.info("ยังไม่มีผู้สมัครในตำแหน่งนี้")
@@ -229,10 +233,10 @@ def seeker_dashboard(user):
         with col1: search_query = st.text_input("ค้นหาจากชื่อตำแหน่ง หรือ ชื่อบริษัท", placeholder="พิมพ์คำค้นหา...")
         with col2: st.write(""); st.write(""); search_clicked = st.button("ค้นหา", use_container_width=True)
         
-        sql = "SELECT JobPost.*, Company.c_name FROM JobPost JOIN Company ON JobPost.j_company_id = Company.c_id WHERE j_closing_date >= CURRENT_DATE"
+        sql = "SELECT JobPost.*, Company.c_name FROM JobPost JOIN Company ON JobPost.j_company_id = Company.c_id WHERE j_closing_date >= CURDATE()"
         params = []
         if search_query:
-            sql += " AND (JobPost.j_position ILIKE %s OR Company.c_name ILIKE %s)" # ILIKE คือ LIKE แบบไม่สน case
+            sql += " AND (JobPost.j_position LIKE %s OR Company.c_name LIKE %s)"
             search_term = f"%{search_query}%"; params.extend([search_term, search_term])
         sql += " ORDER BY j_post_date DESC"
         
@@ -252,7 +256,7 @@ def seeker_dashboard(user):
                             st.info(f"สถานะ: {applied_jobs[job_id]}")
                         else:
                             if st.button("สมัครทันที", key=f"apply_{job_id}", use_container_width=True):
-                                run_query("INSERT INTO Application (app_job_id, app_job_seeker_id, app_apply_date) VALUES (%s, %s, CURRENT_DATE)", (job_id, user['js_id']))
+                                run_query("INSERT INTO Application (app_job_id, app_job_seeker_id, app_apply_date) VALUES (%s, %s, CURDATE())", (job_id, user['js_id']), commit=True)
                                 st.toast("ส่งใบสมัครสำเร็จ!"); time.sleep(1); st.rerun()
                     with st.expander("รายละเอียดงาน"):
                         st.write(f"**Job Description:**\n{job['j_description']}")
@@ -276,7 +280,7 @@ def seeker_dashboard(user):
                     else: c2.write(f"สถานะ: {status}")
                     if status in ['pending', 'reviewing']:
                         if c3.button("ยกเลิกสมัคร", key=f"cancel_{app['app_id']}", use_container_width=True):
-                            run_query("DELETE FROM Application WHERE app_id = %s", (app['app_id'],))
+                            run_query("DELETE FROM Application WHERE app_id = %s", (app['app_id'],), commit=True)
                             st.toast("ยกเลิกการสมัครเรียบร้อยแล้ว"); time.sleep(1); st.rerun()
                     else:
                         c3.write("")
@@ -291,11 +295,14 @@ def edit_profile_page(user, role):
             st.write("### ข้อมูลบริษัท")
             c_name = st.text_input("ชื่อบริษัท", value=user.get('c_name', ''))
             c_email = st.text_input("Email", value=user.get('c_email', ''))
-            c_address = st.text_area("ที่อยู่", value=user.get('c_address', ''))
+            
+            # (FIXED) แก้ไขบั๊กที่คุณเจอ
+            c_address = st.text_area("ที่อยู่", value=user.get('c_address', '')) 
+            
             c_contact = st.text_input("ข้อมูลติดต่อ", value=user.get('c_contact_info', ''))
             if st.form_submit_button("บันทึกการเปลี่ยนแปลง"):
                 sql = "UPDATE Company SET c_name = %s, c_email = %s, c_address = %s, c_contact_info = %s WHERE c_id = %s"
-                if run_query(sql, (c_name, c_email, c_address, c_contact, user['c_id'])):
+                if run_query(sql, (c_name, c_email, c_address, c_contact, user['c_id']), commit=True):
                     st.session_state['user_info']['c_name'] = c_name
                     st.session_state['user_info']['c_email'] = c_email
                     st.session_state['user_info']['c_address'] = c_address
@@ -314,7 +321,7 @@ def edit_profile_page(user, role):
             if st.form_submit_button("บันทึกการเปลี่ยนแปลง"):
                 sql = "UPDATE JobSeeker SET js_full_name = %s, js_email = %s, js_education = %s, js_skills = %s, js_experience = %s WHERE js_id = %s"
                 params = (js_name, js_email, js_edu, js_skills, js_exp, user['js_id'])
-                if run_query(sql, params):
+                if run_query(sql, params, commit=True):
                     st.session_state['user_info']['js_full_name'] = js_name
                     st.session_state['user_info']['js_email'] = js_email
                     st.session_state['user_info']['js_education'] = js_edu
@@ -332,19 +339,23 @@ def main():
         st.title("Job Application System")
         st.write("Connecting talent with opportunity...")
         
+        # (FIX) แสดง Progress Bar ที่ให้ข้อมูลถูกต้อง
         progress_bar = st.progress(0, text="Initializing...")
-        time.sleep(0.1) 
+        time.sleep(0.1) # หน่วงเวลาเล็กน้อย
         
+        # (FIX) บอก User ก่อนว่ากำลังเชื่อมต่อ
         progress_bar.progress(25, text="Connecting to database... (this may take a moment)")
         
-        conn_check = init_connection() # <-- นี่คือส่วนที่นาน
+        conn_check = init_connection() # <--- นี่คือส่วนที่นาน
         
         if conn_check is None:
+            # ถ้าเชื่อมต่อล้มเหลว ให้หยุดแอปและแสดง Error
             st.error("Application failed to start: Could not connect to the database.")
-            st.error("Please check the 'DATABASE_URL' in Railway variables.")
+            st.error("Please check the 'Secrets' configuration in Streamlit settings.")
             progress_bar.empty()
-            return 
+            return # หยุดการทำงานของแอป
         
+        # ถ้าเชื่อมต่อสำเร็จ ให้โหลดต่อ
         progress_bar.progress(75, text="Loading interface...")
         time.sleep(0.1)
         progress_bar.progress(100, text="Ready!")
@@ -355,6 +366,7 @@ def main():
         st.set_page_config(layout="centered", initial_sidebar_state="auto"); st.rerun()
     
     else:
+        # --- Main App Logic (เหมือนเดิม) ---
         if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
         if not st.session_state['logged_in']:
             login_register_page()
