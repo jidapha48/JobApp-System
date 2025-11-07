@@ -1,2 +1,2 @@
 streamlit
-PyMySQL
+psycopg2-binary
