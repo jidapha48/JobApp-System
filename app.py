@@ -19,6 +19,7 @@ def init_connection():
     """เชื่อมต่อฐานข้อมูล MySQL (ใช้ PyMySQL)"""
     try:
         port_int = int(st.secrets["database"]["port"])
+        # (FIX) เพิ่ม connect_timeout=10 วินาที
         return pymysql.connect(
             host=st.secrets["database"]["host"],
             port=port_int,
@@ -26,10 +27,10 @@ def init_connection():
             password=st.secrets["database"]["password"],
             database=st.secrets["database"]["database"],
             client_flag=CLIENT.SSL,
-            cursorclass=DictCursor
+            cursorclass=DictCursor,
+            connect_timeout=10 
         )
     except pymysql.Error as e:
-        # เราจะปล่อยให้ Error แสดงผลใน Health Check แทน
         print(f"Database connection failed: {e}")
         return None
     except ValueError:
@@ -56,13 +57,13 @@ def run_query(query, params=None, commit=False, fetch_one=False, fetch_all=False
                     return cursor.fetchall()
         except pymysql.Error as e:
             st.error(f"Query Error: {e}")
-            # พยายามเชื่อมต่อใหม่หากการเชื่อมต่อเก่าหมดอายุ
-            if e.args[0] == 2006: # MySQL server has gone away
-                st.cache_resource.clear() # ล้าง Cache connection เก่า
+            if e.args[0] in [2006, 2013]: # MySQL server has gone away or Connection lost
+                st.cache_resource.clear() 
                 st.error("Database connection lost. Please refresh the page.")
     else:
         # ถ้า conn เป็น None (เชื่อมต่อล้มเหลวตั้งแต่แรก)
-        st.error("Database connection is not available. Check settings.")
+        # Error นี้จะถูกจัดการในหน้า Splash Screen แล้ว
+        pass 
     return None
 
 # --- 4. UTILITIES (เหมือนเดิม) ---
@@ -105,7 +106,7 @@ def login_register_page():
                 c_user, c_pass = st.text_input("Username *"), st.text_input("Password *", type="password")
                 c_name, c_email = st.text_input("ชื่อบริษัท *"), st.text_input("Email *")
                 c_addr, c_contact = st.text_area("ที่อยู่"), st.text_input("เบอร์ติดต่อ")
-                if st.form_submit_button("ยืนยันการลงทะเบียน"):
+                if st.form_submit_button("ยืนดีต้อนรับการลงทะเบียน"):
                     if c_user and c_pass and c_name and c_email:
                         sql = "INSERT INTO Company (c_username, c_password_hash, c_name, c_email, c_address, c_contact_info) VALUES (%s,%s,%s,%s,%s,%s)"
                         if run_query(sql, (c_user, make_hash(c_pass), c_name, c_email, c_addr, c_contact), commit=True):
@@ -117,7 +118,7 @@ def login_register_page():
                 j_user, j_pass = st.text_input("Username *"), st.text_input("Password *", type="password")
                 j_name, j_email = st.text_input("ชื่อ-นามสกุล *"), st.text_input("Email *")
                 j_edu, j_skill, j_exp = st.text_input("ระดับการศึกษา"), st.text_area("ทักษะ (Skills)"), st.text_area("ประสบการณ์")
-                if st.form_submit_button("ยืนยันการลงทะเบียน"):
+                if st.form_submit_button("ยืนดีต้อนรับการลงทะเบียน"):
                      if j_user and j_pass and j_name and j_email:
                         sql = "INSERT INTO JobSeeker (js_username, js_password_hash, js_full_name, js_email, js_education, js_skills, js_experience) VALUES (%s,%s,%s,%s,%s,%s,%s)"
                         if run_query(sql, (j_user, make_hash(j_pass), j_name, j_email, j_edu, j_skill, j_exp), commit=True):
@@ -264,7 +265,7 @@ def edit_profile_page(user, role):
             st.write("### ข้อมูลบริษัท")
             c_name = st.text_input("ชื่อบริษัท", value=user.get('c_name', ''))
             c_email = st.text_input("Email", value=user.get('c_email', ''))
-            c_address = st.text_area("ที่อยู่", value=user.get('c_address', ''))
+            c_address = st.text_area("ที่อยู่", value=user.get('c_address',_address', ''))
             c_contact = st.text_input("ข้อมูลติดต่อ", value=user.get('c_contact_info', ''))
             if st.form_submit_button("บันทึกการเปลี่ยนแปลง"):
                 sql = "UPDATE Company SET c_name = %s, c_email = %s, c_address = %s, c_contact_info = %s WHERE c_id = %s"
@@ -297,7 +298,7 @@ def edit_profile_page(user, role):
                 else:
                     st.error("เกิดข้อผิดพลาดในการบันทึกข้อมูล")
 
-# --- 9. MAIN APP CONTROLLER (Splash Screen V2: No Image, DB Health Check) ---
+# --- 9. MAIN APP CONTROLLER (Splash Screen V3: Better Feedback) ---
 def main():
     if 'app_initialized' not in st.session_state:
         st.set_page_config(layout="centered", initial_sidebar_state="collapsed")
@@ -305,16 +306,15 @@ def main():
         st.title("Job Application System")
         st.write("Connecting talent with opportunity...")
         
-        # (FIX) ลบรูปภาพที่โหลดช้าออก
-        # st.image("https://cdn-icons-png.flaticon.com/512/3063/3063833.png", width=120) 
-        
+        # (FIX) แสดง Progress Bar ที่ให้ข้อมูลถูกต้อง
         progress_bar = st.progress(0, text="Initializing...")
-        
-        # (FIX) เพิ่มการตรวจสอบการเชื่อมต่อฐานข้อมูล
-        conn_check = init_connection() 
-        progress_bar.progress(33, text="Connecting to database...")
         time.sleep(0.1) # หน่วงเวลาเล็กน้อย
-
+        
+        # (FIX) บอก User ก่อนว่ากำลังเชื่อมต่อ
+        progress_bar.progress(25, text="Connecting to database... (this may take a moment)")
+        
+        conn_check = init_connection() # <--- นี่คือส่วนที่นาน
+        
         if conn_check is None:
             # ถ้าเชื่อมต่อล้มเหลว ให้หยุดแอปและแสดง Error
             st.error("Application failed to start: Could not connect to the database.")
@@ -323,8 +323,8 @@ def main():
             return # หยุดการทำงานของแอป
         
         # ถ้าเชื่อมต่อสำเร็จ ให้โหลดต่อ
-        progress_bar.progress(66, text="Loading interface...")
-        time.sleep(0.2)
+        progress_bar.progress(75, text="Loading interface...")
+        time.sleep(0.1)
         progress_bar.progress(100, text="Ready!")
         time.sleep(0.1)
         progress_bar.empty()
