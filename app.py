@@ -265,7 +265,10 @@ def edit_profile_page(user, role):
             st.write("### ข้อมูลบริษัท")
             c_name = st.text_input("ชื่อบริษัท", value=user.get('c_name', ''))
             c_email = st.text_input("Email", value=user.get('c_email', ''))
-            c_address = st.text_area("ที่อยู่", value=user.get('c_address',_address', ''))
+            
+            # (FIXED) แก้ไขบั๊กที่คุณเจอ
+            c_address = st.text_area("ที่อยู่", value=user.get('c_address', '')) 
+            
             c_contact = st.text_input("ข้อมูลติดต่อ", value=user.get('c_contact_info', ''))
             if st.form_submit_button("บันทึกการเปลี่ยนแปลง"):
                 sql = "UPDATE Company SET c_name = %s, c_email = %s, c_address = %s, c_contact_info = %s WHERE c_id = %s"
