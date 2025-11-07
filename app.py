@@ -29,10 +29,14 @@ def init_connection():
             cursorclass=DictCursor
         )
     except pymysql.Error as e:
-        st.error(f"Database connection failed: {e}")
+        # เราจะปล่อยให้ Error แสดงผลใน Health Check แทน
+        print(f"Database connection failed: {e}")
         return None
     except ValueError:
-        st.error("Invalid Port number in Secrets. Please check your settings.")
+        print("Invalid Port number in Secrets.")
+        return None
+    except Exception as e:
+        print(f"An unexpected error occurred in init_connection: {e}")
         return None
 
 # --- 3. RUN QUERY FUNCTION (ปรับปรุงสำหรับ PyMySQL) ---
@@ -52,6 +56,13 @@ def run_query(query, params=None, commit=False, fetch_one=False, fetch_all=False
                     return cursor.fetchall()
         except pymysql.Error as e:
             st.error(f"Query Error: {e}")
+            # พยายามเชื่อมต่อใหม่หากการเชื่อมต่อเก่าหมดอายุ
+            if e.args[0] == 2006: # MySQL server has gone away
+                st.cache_resource.clear() # ล้าง Cache connection เก่า
+                st.error("Database connection lost. Please refresh the page.")
+    else:
+        # ถ้า conn เป็น None (เชื่อมต่อล้มเหลวตั้งแต่แรก)
+        st.error("Database connection is not available. Check settings.")
     return None
 
 # --- 4. UTILITIES (เหมือนเดิม) ---
@@ -151,7 +162,6 @@ def company_dashboard(user):
         my_jobs = run_query("SELECT j_id, j_position FROM JobPost WHERE j_company_id = %s", (user['c_id'],), fetch_all=True)
         if my_jobs:
             for job in my_jobs:
-                # (OPTIMIZATION) นี่คือ N+1 Query ที่เราอาจจะแก้ทีหลังได้ แต่ตอนนี้ยังทำงานได้
                 sql_apps = "SELECT Application.*, JobSeeker.js_full_name, JobSeeker.js_email, JobSeeker.js_skills, JobSeeker.js_experience FROM Application JOIN JobSeeker ON Application.app_job_seeker_id = JobSeeker.js_id WHERE app_job_id = %s ORDER BY app_apply_date DESC"
                 applicants = run_query(sql_apps, (job['j_id'],), fetch_all=True)
                 count = len(applicants) if applicants else 0
@@ -183,10 +193,7 @@ def seeker_dashboard(user):
     st.subheader(f"สวัสดีคุณ {user['js_full_name']}")
     tab1, tab2 = st.tabs(["ค้นหางาน", "สถานะการสมัคร"])
 
-    # (FIX #2) ย้ายการดึงข้อมูลการสมัครทั้งหมดมาไว้ข้างนอก
     my_apps_data = run_query("SELECT app_job_id, app_status FROM Application WHERE app_job_seeker_id=%s", (user['js_id'],), fetch_all=True)
-    # สร้าง Dictionary เพื่อให้ค้นหาได้เร็ว (O(1) lookup)
-    # {job_id: 'status'} เช่น {2: 'pending', 5: 'interview'}
     applied_jobs = {app['app_job_id']: app['app_status'] for app in my_apps_data} if my_apps_data else {}
 
     with tab1:
@@ -195,7 +202,6 @@ def seeker_dashboard(user):
         with col1: search_query = st.text_input("ค้นหาจากชื่อตำแหน่ง หรือ ชื่อบริษัท", placeholder="พิมพ์คำค้นหา...")
         with col2: st.write(""); st.write(""); search_clicked = st.button("ค้นหา", use_container_width=True)
         
-        # (Query 1) ดึงงานทั้งหมด
         sql = "SELECT JobPost.*, Company.c_name FROM JobPost JOIN Company ON JobPost.j_company_id = Company.c_id WHERE j_closing_date >= CURDATE()"
         params = []
         if search_query:
@@ -214,7 +220,6 @@ def seeker_dashboard(user):
                         st.write(f"### {job['j_position']}")
                         st.write(f"{job['c_name']} | ปิดรับ: {job['j_closing_date']}")
                     with c2:
-                        # (FIX #2) ตรวจสอบจาก Dictionary ใน Python (เร็วกว่ามาก)
                         job_id = job['j_id']
                         if job_id in applied_jobs:
                             st.info(f"สถานะ: {applied_jobs[job_id]}")
@@ -230,8 +235,6 @@ def seeker_dashboard(user):
             
     with tab2:
         st.write("### ประวัติการสมัครงานของคุณ")
-        # (OPTIMIZATION) เราสามารถใช้ข้อมูล `my_apps_data` ที่ดึงมาแล้วได้ แต่การ JOIN จะให้ข้อมูลที่สมบูรณ์กว่า
-        # การดึงหน้านี้ยังคงต้องใช้ Query ที่ซับซ้อน แต่หน้านี้ User ไม่ได้เปิดบ่อยเท่าหน้าค้นหา
         my_apps_display = run_query("SELECT Application.*, JobPost.j_position, Company.c_name FROM Application JOIN JobPost ON Application.app_job_id = JobPost.j_id JOIN Company ON JobPost.j_company_id = Company.c_id WHERE app_job_seeker_id = %s ORDER BY app_apply_date DESC", (user['js_id'],), fetch_all=True)
         if my_apps_display:
             for app in my_apps_display:
@@ -294,22 +297,43 @@ def edit_profile_page(user, role):
                 else:
                     st.error("เกิดข้อผิดพลาดในการบันทึกข้อมูล")
 
-# --- 9. MAIN APP CONTROLLER (Splash Screen Optimized) ---
+# --- 9. MAIN APP CONTROLLER (Splash Screen V2: No Image, DB Health Check) ---
 def main():
     if 'app_initialized' not in st.session_state:
         st.set_page_config(layout="centered", initial_sidebar_state="collapsed")
-        with st.container():
-            st.image("https://cdn-icons-png.flaticon.com/512/3063/3063833.png", width=120)
-            st.title("Job Application System"); st.write("Connecting talent with opportunity...")
-            progress_bar = st.progress(0)
-            # (FIX #1) ลดเวลา sleep ให้เร็วขึ้น
-            for percent_complete in range(100):
-                time.sleep(0.005) # <--- ลดจาก 0.02 เหลือ 0.005 (รวม 0.5 วินาที)
-                progress_bar.progress(percent_complete + 1)
+        
+        st.title("Job Application System")
+        st.write("Connecting talent with opportunity...")
+        
+        # (FIX) ลบรูปภาพที่โหลดช้าออก
+        # st.image("https://cdn-icons-png.flaticon.com/512/3063/3063833.png", width=120) 
+        
+        progress_bar = st.progress(0, text="Initializing...")
+        
+        # (FIX) เพิ่มการตรวจสอบการเชื่อมต่อฐานข้อมูล
+        conn_check = init_connection() 
+        progress_bar.progress(33, text="Connecting to database...")
+        time.sleep(0.1) # หน่วงเวลาเล็กน้อย
+
+        if conn_check is None:
+            # ถ้าเชื่อมต่อล้มเหลว ให้หยุดแอปและแสดง Error
+            st.error("Application failed to start: Could not connect to the database.")
+            st.error("Please check the 'Secrets' configuration in Streamlit settings.")
             progress_bar.empty()
+            return # หยุดการทำงานของแอป
+        
+        # ถ้าเชื่อมต่อสำเร็จ ให้โหลดต่อ
+        progress_bar.progress(66, text="Loading interface...")
+        time.sleep(0.2)
+        progress_bar.progress(100, text="Ready!")
+        time.sleep(0.1)
+        progress_bar.empty()
+
         st.session_state.app_initialized = True
         st.set_page_config(layout="centered", initial_sidebar_state="auto"); st.rerun()
+    
     else:
+        # --- Main App Logic (เหมือนเดิม) ---
         if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
         if not st.session_state['logged_in']:
             login_register_page()
