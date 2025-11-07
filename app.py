@@ -158,14 +158,44 @@ def company_dashboard(user):
                         st.success(f"ลงประกาศตำแหน่ง '{j_pos}' เรียบร้อยแล้ว!"); time.sleep(1.5); st.rerun()
                 else:
                     st.error("กรุณาระบุชื่อตำแหน่งงาน")
+    
     with tab3:
         st.write("### รายชื่อผู้สมัครแยกตามตำแหน่งงาน")
         my_jobs = run_query("SELECT j_id, j_position FROM JobPost WHERE j_company_id = %s", (user['c_id'],), fetch_all=True)
+        
         if my_jobs:
+            job_ids = [job['j_id'] for job in my_jobs]
+            
+            # (FIX) สร้าง placeholder (%s, %s, %s)
+            if job_ids: # ตรวจสอบว่ามีงานหรือไม่
+                placeholders = ','.join(['%s'] * len(job_ids))
+                
+                sql_all_apps = f"""
+                    SELECT Application.*, JobSeeker.js_full_name, JobSeeker.js_email, JobSeeker.js_skills, JobSeeker.js_experience
+                    FROM Application
+                    JOIN JobSeeker ON Application.app_job_seeker_id = JobSeeker.js_id
+                    WHERE app_job_id IN ({placeholders})
+                    ORDER BY app_apply_date DESC
+                """
+                all_applicants = run_query(sql_all_apps, tuple(job_ids), fetch_all=True)
+                
+                # (FIX) จัดกลุ่มผู้สมัครด้วย Python (เร็วกว่ายิง Query)
+                applicants_by_job = {}
+                if all_applicants:
+                    for app in all_applicants:
+                        job_id = app['app_job_id']
+                        if job_id not in applicants_by_job:
+                            applicants_by_job[job_id] = []
+                        applicants_by_job[job_id].append(app)
+            else:
+                applicants_by_job = {}
+
+            # (FIX) Loop นี้จะเร็วมาก เพราะดึงข้อมูลจาก Python Dict
             for job in my_jobs:
-                sql_apps = "SELECT Application.*, JobSeeker.js_full_name, JobSeeker.js_email, JobSeeker.js_skills, JobSeeker.js_experience FROM Application JOIN JobSeeker ON Application.app_job_seeker_id = JobSeeker.js_id WHERE app_job_id = %s ORDER BY app_apply_date DESC"
-                applicants = run_query(sql_apps, (job['j_id'],), fetch_all=True)
-                count = len(applicants) if applicants else 0
+                job_id = job['j_id']
+                applicants = applicants_by_job.get(job_id, []) # ดึงจาก Dict
+                count = len(applicants)
+
                 with st.expander(f"ตำแหน่ง: {job['j_position']} ({count} คนสมัคร)"):
                     if applicants:
                         for app in applicants:
