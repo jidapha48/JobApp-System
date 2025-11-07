@@ -12,10 +12,10 @@ st.set_page_config(
     initial_sidebar_state="auto"
 )
 
-# --- 2. DATABASE CONNECTION (Efficient Caching) ---
+# --- 2. DATABASE CONNECTION (FIXED) ---
 @st.cache_resource
 def init_connection():
-    """เชื่อมต่อฐานข้อมูล MySQL"""
+    """เชื่อมต่อฐานข้อมูล MySQL (แก้ไขปัญหา Port และ Error)"""
     try:
         # (FIX) ดึงค่า port มาเป็น string ก่อน
         port_str = st.secrets["database"]["port"]
@@ -38,7 +38,33 @@ def init_connection():
         st.error(f"Database connection failed: {e}")
         return None
 
-# --- 3. UTILITIES ---
+# --- 3. (RE-ADDED) RUN QUERY FUNCTION ---
+def run_query(query, params=None, commit=False, fetch_one=False, fetch_all=False):
+    """
+    ฟังก์ชันสำหรับรัน SQL Query (แก้ไข Error 'UnboundLocalError' แล้ว)
+    """
+    conn = init_connection()
+    cursor = None  # 1. ประกาศตัวแปรไว้ก่อน
+    if conn and conn.is_connected():
+        try:
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute(query, params)
+            if commit:
+                conn.commit()
+                return True
+            elif fetch_one:
+                return cursor.fetchone()
+            elif fetch_all:
+                return cursor.fetchall()
+        except Error as e:
+            st.error(f"Query Error: {e}")
+        finally:
+            # 2. ตรวจสอบว่า cursor ถูกสร้างสำเร็จหรือไม่ก่อนสั่งปิด
+            if cursor is not None:
+                cursor.close()
+    return None
+
+# --- 4. UTILITIES ---
 def make_hash(password):
     """สร้าง Hash สำหรับ Password"""
     return hashlib.sha256(str.encode(password)).hexdigest()
@@ -47,20 +73,20 @@ def check_login(username, password):
     """ตรวจสอบการเข้าสู่ระบบทั้ง 2 ตาราง"""
     hashed_pw = make_hash(password)
     # Check Company
-    comp = run_query("SELECT * FROM Company WHERE c_username = %s AND c_password_hash = %s",
+    comp = run_query("SELECT * FROM Company WHERE c_username = %s AND c_password_hash = %s", 
                      (username, hashed_pw), fetch_one=True)
     if comp: return "Company", comp
     # Check JobSeeker
-    seeker = run_query("SELECT * FROM JobSeeker WHERE js_username = %s AND js_password_hash = %s",
+    seeker = run_query("SELECT * FROM JobSeeker WHERE js_username = %s AND js_password_hash = %s", 
                        (username, hashed_pw), fetch_one=True)
     if seeker: return "JobSeeker", seeker
     return None, None
 
-# --- 4. AUTHENTICATION PAGES ---
+# --- 5. AUTHENTICATION PAGES ---
 def login_register_page():
     """แสดงหน้า Login และ Register ในรูปแบบ Tabs"""
     st.title("Job Application System")
-
+    
     tab1, tab2 = st.tabs(["เข้าสู่ระบบ (Login)", "ลงทะเบียน (Register)"])
 
     with tab1:
@@ -82,7 +108,7 @@ def login_register_page():
     with tab2:
         st.write("### สร้างบัญชีใหม่")
         user_type = st.selectbox("คุณคือใคร?", ["ผู้หางาน (Job Seeker)", "บริษัท (Company)"])
-
+        
         if "Company" in user_type:
             with st.form("reg_company"):
                 c_user = st.text_input("Username *")
@@ -98,7 +124,7 @@ def login_register_page():
                             st.success("ลงทะเบียนบริษัทสำเร็จ! กรุณาเข้าสู่ระบบ")
                     else:
                         st.warning("กรุณากรอกช่องที่มีเครื่องหมาย * ให้ครบ")
-
+                        
         else: # Job Seeker
              with st.form("reg_seeker"):
                 j_user = st.text_input("Username *")
@@ -116,13 +142,13 @@ def login_register_page():
                      else:
                         st.warning("กรุณากรอกช่องที่มีเครื่องหมาย * ให้ครบ")
 
-# --- 5. COMPANY DASHBOARD ---
+# --- 6. COMPANY DASHBOARD ---
 def company_dashboard(user):
     """หน้า Dashboard สำหรับบริษัท"""
     st.subheader(f"Dashboard: {user['c_name']}")
-
+    
     tab1, tab2, tab3 = st.tabs(["ประกาศงานของคุณ", "ลงประกาศงานใหม่", "จัดการใบสมัคร"])
-
+    
     with tab1:
         st.write("### งานที่คุณเปิดรับอยู่ในขณะนี้")
         jobs = run_query("SELECT * FROM JobPost WHERE j_company_id = %s ORDER BY j_post_date DESC", (user['c_id'],), fetch_all=True)
@@ -145,10 +171,10 @@ def company_dashboard(user):
             j_pos = st.text_input("ชื่อตำแหน่ง (Position) *", placeholder="เช่น Senior Marketing Officer")
             j_desc = st.text_area("รายละเอียดงาน (Job Description)", height=150)
             j_req = st.text_area("คุณสมบัติ (Requirements)", height=150, placeholder="เช่น วุฒิป.ตรี, ประสบการณ์ 2 ปี...")
-
+            
             default_close = datetime.date.today() + datetime.timedelta(days=30)
             j_close = st.date_input("วันปิดรับสมัคร", value=default_close)
-
+            
             submitted = st.form_submit_button("ยืนยันการลงประกาศ")
             if submitted:
                 if j_pos:
@@ -166,7 +192,7 @@ def company_dashboard(user):
     with tab3:
         st.write("### รายชื่อผู้สมัครแยกตามตำแหน่งงาน")
         my_jobs = run_query("SELECT j_id, j_position FROM JobPost WHERE j_company_id = %s", (user['c_id'],), fetch_all=True)
-
+        
         if my_jobs:
             for job in my_jobs:
                 sql_apps = """
@@ -177,7 +203,7 @@ def company_dashboard(user):
                     ORDER BY app_apply_date DESC
                 """
                 applicants = run_query(sql_apps, (job['j_id'],), fetch_all=True)
-
+                
                 count = len(applicants) if applicants else 0
                 with st.expander(f"ตำแหน่ง: {job['j_position']} ({count} คนสมัคร)"):
                     if applicants:
@@ -190,14 +216,14 @@ def company_dashboard(user):
                                     st.write(f"**Skills:** {app['js_skills']}")
                                     with st.expander("ดูประสบการณ์ทำงาน"):
                                         st.write(app['js_experience'])
-
+                                
                                 with col2:
                                     st.write("#### อัปเดตสถานะ")
                                     status_options = ['pending', 'reviewing', 'interview', 'rejected', 'offered']
                                     current_index = status_options.index(app['app_status']) if app['app_status'] in status_options else 0
-
+                                    
                                     new_status = st.selectbox("เลือกสถานะ:", status_options, index=current_index, key=f"st_{app['app_id']}")
-
+                                    
                                     if st.button("บันทึก", key=f"save_{app['app_id']}"):
                                         run_query("UPDATE Application SET app_status = %s WHERE app_id = %s", (new_status, app['app_id']), commit=True)
                                         st.toast(f"อัปเดตสถานะของ {app['js_full_name']} แล้ว!")
@@ -208,41 +234,41 @@ def company_dashboard(user):
         else:
             st.warning("กรุณาลงประกาศงานก่อน เพื่อให้มีผู้สมัคร")
 
-# --- 6. JOB SEEKER DASHBOARD ---
+# --- 7. JOB SEEKER DASHBOARD ---
 def seeker_dashboard(user):
-    """หน้า Dashboard สำหรับผู้หางาน"""
+    """หน้า Dashboard สำหรับผู้หางาน (เพิ่มปุ่มยกเลิกสมัคร)"""
     st.subheader(f"สวัสดีคุณ {user['js_full_name']}")
-
+    
     tab1, tab2 = st.tabs(["ค้นหางาน", "สถานะการสมัคร"])
-
+    
     with tab1:
         st.write("### ค้นหาตำแหน่งงานที่ใช่สำหรับคุณ")
-
+        
         col1, col2 = st.columns([3, 1])
         with col1:
             search_query = st.text_input("ค้นหาจากชื่อตำแหน่ง หรือ ชื่อบริษัท", placeholder="พิมพ์คำค้นหา...")
         with col2:
-            st.write("")
+            st.write("") 
             st.write("")
             search_clicked = st.button("ค้นหา", use_container_width=True)
 
         sql = """
-            SELECT JobPost.*, Company.c_name
-            FROM JobPost
+            SELECT JobPost.*, Company.c_name 
+            FROM JobPost 
             JOIN Company ON JobPost.j_company_id = Company.c_id
             WHERE j_closing_date >= CURDATE()
         """
         params = []
-
+        
         if search_query:
             sql += " AND (JobPost.j_position LIKE %s OR Company.c_name LIKE %s)"
             search_term = f"%{search_query}%"
             params.extend([search_term, search_term])
-
+            
         sql += " ORDER BY j_post_date DESC"
-
+        
         jobs = run_query(sql, tuple(params) if params else None, fetch_all=True)
-
+        
         if jobs:
             st.success(f"ค้นพบ {len(jobs)} ตำแหน่งงาน")
             for job in jobs:
@@ -252,7 +278,7 @@ def seeker_dashboard(user):
                         st.write(f"### {job['j_position']}")
                         st.write(f"{job['c_name']} | ปิดรับ: {job['j_closing_date']}")
                     with c2:
-                        check = run_query("SELECT app_status FROM Application WHERE app_job_id=%s AND app_job_seeker_id=%s",
+                        check = run_query("SELECT app_status FROM Application WHERE app_job_id=%s AND app_job_seeker_id=%s", 
                                           (job['j_id'], user['js_id']), fetch_one=True)
                         if check:
                             st.info(f"สถานะ: {check['app_status']}")
@@ -278,38 +304,40 @@ def seeker_dashboard(user):
             JOIN Company ON JobPost.j_company_id = Company.c_id
             WHERE app_job_seeker_id = %s ORDER BY app_apply_date DESC
         """, (user['js_id'],), fetch_all=True)
-
+        
         if my_apps:
             for app in my_apps:
                 with st.container(border=True):
-                    c1, c2, c3 = st.columns([2, 2, 1])
+                    c1, c2, c3 = st.columns([2, 1, 1]) # ปรับขนาด Column
                     c1.write(f"**{app['j_position']}**")
                     c1.caption(app['c_name'])
-                    c2.write(f"วันที่สมัคร: {app['app_apply_date']}")
-
+                    
                     status = app['app_status']
                     if status == 'pending':
-                        c3.warning("รอพิจารณา")
+                        c2.warning("รอพิจารณา")
                     elif status == 'reviewing':
-                        c3.info("กำลังรีวิว")
+                        c2.info("กำลังรีวิว")
                     elif status == 'interview':
-                        c3.success("เรียกสัมภาษณ์")
+                        c2.success("เรียกสัมภาษณ์")
                     elif status == 'rejected':
-                        c3.error("ไม่ผ่าน")
+                        c2.error("ไม่ผ่าน")
                     else:
-                        c3.write(f"สถานะ: {status}")
+                        c2.write(f"สถานะ: {status}")
                     
-                    # (NEW) ปุ่มยกเลิกการสมัคร
+                    # (FIX) ปุ่มยกเลิกการสมัคร
                     if status in ['pending', 'reviewing']:
-                        if st.button("ยกเลิกการสมัคร", key=f"cancel_{app['app_id']}", use_container_width=True):
+                        if c3.button("ยกเลิกสมัคร", key=f"cancel_{app['app_id']}", use_container_width=True):
                             run_query("DELETE FROM Application WHERE app_id = %s", (app['app_id'],), commit=True)
                             st.toast("ยกเลิกการสมัครเรียบร้อยแล้ว")
                             time.sleep(1)
                             st.rerun()
+                    else:
+                        c3.write("") # เว้นช่องว่างให้ตรงกัน
+
         else:
             st.info("คุณยังไม่ได้สมัครงาน")
 
-# --- 7. EDIT PROFILE PAGE ---
+# --- 8. EDIT PROFILE PAGE ---
 def edit_profile_page(user, role):
     """หน้าที่แสดงฟอร์มสำหรับแก้ไขข้อมูลส่วนตัว"""
     st.subheader("แก้ไขข้อมูลส่วนตัว")
@@ -321,10 +349,10 @@ def edit_profile_page(user, role):
             c_email = st.text_input("Email", value=user.get('c_email', ''))
             c_address = st.text_area("ที่อยู่", value=user.get('c_address', ''))
             c_contact = st.text_input("ข้อมูลติดต่อ", value=user.get('c_contact_info', ''))
-
+            
             if st.form_submit_button("บันทึกการเปลี่ยนแปลง"):
                 sql = """
-                    UPDATE Company
+                    UPDATE Company 
                     SET c_name = %s, c_email = %s, c_address = %s, c_contact_info = %s
                     WHERE c_id = %s
                 """
@@ -348,7 +376,7 @@ def edit_profile_page(user, role):
             js_edu = st.text_input("ระดับการศึกษา", value=user.get('js_education', ''))
             js_skills = st.text_area("ทักษะ (Skills)", value=user.get('js_skills', ''))
             js_exp = st.text_area("ประสบการณ์", value=user.get('js_experience', ''))
-
+            
             if st.form_submit_button("บันทึกการเปลี่ยนแปลง"):
                 sql = """
                     UPDATE JobSeeker
@@ -369,10 +397,10 @@ def edit_profile_page(user, role):
                 else:
                     st.error("เกิดข้อผิดพลาดในการบันทึกข้อมูล")
 
-# --- 8. MAIN APP CONTROLLER ---
+# --- 9. MAIN APP CONTROLLER ---
 def main():
     
-    # --- (NEW) Splash Screen Logic ---
+    # --- Splash Screen Logic ---
     if 'app_initialized' not in st.session_state:
         st.set_page_config(layout="centered", initial_sidebar_state="collapsed")
         
@@ -385,14 +413,13 @@ def main():
             for percent_complete in range(100):
                 time.sleep(0.02)
                 progress_bar.progress(percent_complete + 1)
-            
             progress_bar.empty()
         
         st.session_state.app_initialized = True
         st.set_page_config(layout="centered", initial_sidebar_state="auto")
         st.rerun()
 
-    # --- (EXISTING) Main App Logic ---
+    # --- Main App Logic ---
     else:
         if 'logged_in' not in st.session_state:
             st.session_state['logged_in'] = False
@@ -403,7 +430,6 @@ def main():
             user = st.session_state['user_info']
             role = st.session_state['user_role']
             
-            # --- Sidebar Navigation ---
             st.sidebar.header(f"บัญชีผู้ใช้: {role}")
             st.sidebar.write(f"สวัสดี, **{user.get('c_username') or user.get('js_username')}**")
             st.sidebar.divider()
@@ -418,7 +444,6 @@ def main():
                 st.session_state['user_info'] = None
                 st.rerun()
             
-            # --- Main Content (แสดงผลตามเมนูที่เลือก) ---
             if page == "Dashboard (หน้าหลัก)":
                 if role == "Company":
                     company_dashboard(user)
@@ -429,5 +454,4 @@ def main():
                 edit_profile_page(user, role)
 
 if __name__ == '__main__':
-
     main()
