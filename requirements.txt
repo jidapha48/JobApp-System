@@ -1,9 +1,1 @@
-[theme]
-primaryColor = "#2563EB"
-backgroundColor = "#FFD8D9"
-secondaryBackgroundColor = "#FFFFFF"
-textColor = "#1E293B"
-font = "sans serif"
-
-[server]
-runOnSave = true
+mysql-connector-python-rf
